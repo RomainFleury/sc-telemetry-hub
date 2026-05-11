@@ -1,1 +1,254 @@
-#!/usr/bin/env python3\n\"\"\"Telemetry Hub server - main daemon.\"\"\"\n\nimport socket\nimport threading\nimport json\nimport logging\nimport time\nfrom typing import List, Optional\nfrom collections import deque\n\nfrom .parser import DBoxParser\nfrom .normalizer import TelemetryNormalizer\nfrom .impact_detector import ImpactDetector\n\nlogger = logging.getLogger(__name__)\nlogger.setLevel(logging.INFO)\nif not logger.handlers:\n    handler = logging.StreamHandler()\n    handler.setFormatter(logging.Formatter(\n        '[%(asctime)s] %(levelname)s: %(message)s',\n        datefmt='%H:%M:%S'\n    ))\n    logger.addHandler(handler)\n\n\nclass TelemetryServer:\n    \"\"\"Main telemetry server.\"\"\"\n    \n    def __init__(self, host: str = '127.0.0.1', tcp_port: int = 5050,\n                 broadcast_port: int = 5555, dbox_port: int = 33740):\n        \"\"\"Initialize server.\n        \n        Args:\n            host: Bind address\n            tcp_port: TCP server port for UI connections\n            broadcast_port: UDP broadcast port for external apps\n            dbox_port: UDP input port for D-BOX packets\n        \"\"\"\n        self.host = host\n        self.tcp_port = tcp_port\n        self.broadcast_port = broadcast_port\n        self.dbox_port = dbox_port\n        \n        self.running = False\n        self.clients: List[socket.socket] = []\n        self.impact_detector = ImpactDetector()\n        \n        # Telemetry buffer (keep last 100 samples for UI)\n        self.telemetry_buffer = deque(maxlen=100)\n        \n        # Thread control\n        self.lock = threading.Lock()\n    \n    def start(self):\n        \"\"\"Start the server.\"\"\"\n        self.running = True\n        \n        # Start UDP listener thread\n        udp_thread = threading.Thread(target=self._run_udp_listener, daemon=True)\n        udp_thread.start()\n        \n        # Start TCP server thread\n        tcp_thread = threading.Thread(target=self._run_tcp_server, daemon=True)\n        tcp_thread.start()\n        \n        # Start UDP broadcaster thread\n        broadcast_thread = threading.Thread(target=self._run_broadcaster, daemon=True)\n        broadcast_thread.start()\n        \n        logger.info(\"✅ Telemetry Hub server started\")\n        logger.info(f\"   UDP input (D-BOX): {self.host}:{self.dbox_port}\")\n        logger.info(f\"   TCP server (UI):    {self.host}:{self.tcp_port}\")\n        logger.info(f\"   UDP broadcast:      {self.host}:{self.broadcast_port}\")\n        logger.info(\"Press Ctrl+C to shutdown...\")\n        \n        # Keep main thread alive\n        try:\n            while self.running:\n                time.sleep(1)\n        except KeyboardInterrupt:\n            self.stop()\n    \n    def stop(self):\n        \"\"\"Stop the server.\"\"\"\n        logger.info(\"🛑 Shutting down...\")\n        self.running = False\n        \n        # Close all client connections\n        with self.lock:\n            for client in self.clients:\n                try:\n                    client.close()\n                except:\n                    pass\n            self.clients.clear()\n    \n    def _run_udp_listener(self):\n        \"\"\"Listen for D-BOX UDP packets.\"\"\"\n        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        \n        try:\n            sock.bind((self.host, self.dbox_port))\n            logger.info(f\"📡 UDP listener ready on port {self.dbox_port}\")\n            \n            packet_count = 0\n            while self.running:\n                try:\n                    data, addr = sock.recvfrom(1024)\n                    packet_count += 1\n                    \n                    # Parse packet\n                    parsed = DBoxParser.parse(data)\n                    if parsed:\n                        # Detect impacts\n                        impact = self.impact_detector.detect(parsed)\n                        \n                        # Normalize\n                        normalized = TelemetryNormalizer.normalize(parsed, impact)\n                        \n                        # Store in buffer\n                        with self.lock:\n                            self.telemetry_buffer.append(normalized)\n                        \n                        # Log every 60 packets\n                        if packet_count % 60 == 0:\n                            logger.info(f\"📊 Processed {packet_count} packets\")\n                    else:\n                        logger.warning(f\"Failed to parse packet from {addr}\")\n                        \n                except Exception as e:\n                    logger.error(f\"UDP listener error: {e}\")\n        except Exception as e:\n            logger.error(f\"UDP listener failed: {e}\")\n        finally:\n            sock.close()\n    \n    def _run_tcp_server(self):\n        \"\"\"TCP server for UI connections.\"\"\"\n        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        \n        try:\n            server.bind((self.host, self.tcp_port))\n            server.listen(5)\n            logger.info(f\"🖥️  TCP server ready on port {self.tcp_port}\")\n            \n            while self.running:\n                try:\n                    client, addr = server.accept()\n                    logger.info(f\"✅ Client connected: {addr}\")\n                    \n                    with self.lock:\n                        self.clients.append(client)\n                    \n                    # Handle client in separate thread\n                    thread = threading.Thread(\n                        target=self._handle_client,\n                        args=(client, addr),\n                        daemon=True\n                    )\n                    thread.start()\n                except Exception as e:\n                    if self.running:\n                        logger.error(f\"TCP server error: {e}\")\n        except Exception as e:\n            logger.error(f\"TCP server failed: {e}\")\n        finally:\n            server.close()\n    \n    def _handle_client(self, client: socket.socket, addr):\n        \"\"\"Handle individual client connection.\"\"\"\n        try:\n            while self.running:\n                # Send latest telemetry to client every 100ms\n                with self.lock:\n                    if self.telemetry_buffer:\n                        latest = self.telemetry_buffer[-1]\n                        data = TelemetryNormalizer.to_json_bytes(latest)\n                        client.send(data + b'\\n')\n                \n                time.sleep(0.1)\n        except Exception as e:\n            logger.debug(f\"Client {addr} disconnected: {e}\")\n        finally:\n            with self.lock:\n                try:\n                    self.clients.remove(client)\n                except:\n                    pass\n            client.close()\n    \n    def _run_broadcaster(self):\n        \"\"\"UDP broadcaster for external apps.\"\"\"\n        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        \n        try:\n            while self.running:\n                with self.lock:\n                    if self.telemetry_buffer:\n                        latest = self.telemetry_buffer[-1]\n                        data = TelemetryNormalizer.to_json_bytes(latest)\n                        try:\n                            sock.sendto(data, (self.host, self.broadcast_port))\n                        except Exception as e:\n                            logger.debug(f\"Broadcast error: {e}\")\n                \n                time.sleep(0.016)  # ~60 Hz\n        except Exception as e:\n            logger.error(f\"Broadcaster error: {e}\")\n        finally:\n            sock.close()\n"
+#!/usr/bin/env python3
+"""Telemetry Hub server - main daemon."""
+
+from __future__ import annotations
+
+import json
+import logging
+import select
+import socket
+import threading
+import time
+from collections import deque
+from typing import List
+
+from .impact_detector import ImpactDetector
+from .normalizer import TelemetryNormalizer
+from .parser import DBoxParser
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+    )
+    logger.addHandler(handler)
+
+
+class TelemetryServer:
+    """Main telemetry server."""
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        tcp_port: int = 5050,
+        broadcast_port: int = 5555,
+        dbox_port: int = 33740,
+    ) -> None:
+        self.host = host
+        self.tcp_port = tcp_port
+        self.broadcast_port = broadcast_port
+        self.dbox_port = dbox_port
+
+        self.running = False
+        self.clients: List[socket.socket] = []
+        self.impact_detector = ImpactDetector()
+
+        self.telemetry_buffer: deque = deque(maxlen=100)
+        self.lock = threading.Lock()
+
+        self._tcp_server_sock: socket.socket | None = None
+        self._udp_in_sock: socket.socket | None = None
+
+    def start(self) -> None:
+        self.running = True
+
+        threading.Thread(target=self._run_udp_listener, daemon=True).start()
+        threading.Thread(target=self._run_tcp_server, daemon=True).start()
+        threading.Thread(target=self._run_broadcaster, daemon=True).start()
+
+        logger.info("Telemetry Hub server started")
+        logger.info("   UDP input (D-BOX): %s:%s", self.host, self.dbox_port)
+        logger.info("   TCP server (UI):   %s:%s", self.host, self.tcp_port)
+        logger.info("   UDP send target:   %s:%s", self.host, self.broadcast_port)
+        logger.info("Press Ctrl+C to shutdown...")
+
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.stop()
+
+    def stop(self) -> None:
+        logger.info("Shutting down...")
+        self.running = False
+
+        if self._tcp_server_sock:
+            try:
+                self._tcp_server_sock.close()
+            except OSError:
+                pass
+            self._tcp_server_sock = None
+
+        if self._udp_in_sock:
+            try:
+                self._udp_in_sock.close()
+            except OSError:
+                pass
+            self._udp_in_sock = None
+
+        with self.lock:
+            for client in self.clients:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+            self.clients.clear()
+
+    def _run_udp_listener(self) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._udp_in_sock = sock
+
+        try:
+            sock.bind((self.host, self.dbox_port))
+            logger.info("UDP listener ready on port %s", self.dbox_port)
+
+            packet_count = 0
+            while self.running:
+                try:
+                    sock.settimeout(0.5)
+                    try:
+                        data, addr = sock.recvfrom(2048)
+                    except socket.timeout:
+                        continue
+                    packet_count += 1
+
+                    parsed = DBoxParser.parse(data)
+                    if parsed:
+                        impact = self.impact_detector.detect(parsed)
+                        normalized = TelemetryNormalizer.normalize(parsed, impact)
+                        with self.lock:
+                            self.telemetry_buffer.append(normalized)
+
+                        if packet_count % 60 == 0:
+                            logger.info("Processed %s packets", packet_count)
+                    else:
+                        logger.warning("Failed to parse packet from %s", addr)
+
+                except OSError:
+                    if not self.running:
+                        break
+                    logger.exception("UDP listener error")
+        except OSError as e:
+            logger.error("UDP listener failed: %s", e)
+        finally:
+            sock.close()
+
+    def _run_tcp_server(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._tcp_server_sock = server
+
+        try:
+            server.bind((self.host, self.tcp_port))
+            server.listen(5)
+            server.settimeout(0.5)
+            logger.info("TCP server ready on port %s", self.tcp_port)
+
+            while self.running:
+                try:
+                    try:
+                        client, addr = server.accept()
+                    except socket.timeout:
+                        continue
+                    logger.info("Client connected: %s", addr)
+
+                    with self.lock:
+                        self.clients.append(client)
+
+                    threading.Thread(
+                        target=self._handle_client,
+                        args=(client, addr),
+                        daemon=True,
+                    ).start()
+                except OSError:
+                    if not self.running:
+                        break
+                    if self.running:
+                        logger.exception("TCP server error")
+        except OSError as e:
+            logger.error("TCP server failed: %s", e)
+        finally:
+            server.close()
+
+    def _handle_client(self, client: socket.socket, addr) -> None:
+        buf = b""
+        try:
+            while self.running:
+                r, _, _ = select.select([client], [], [], 0.1)
+                if r:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            msg = json.loads(line.decode())
+                        except json.JSONDecodeError:
+                            continue
+                        cmd = msg.get("command")
+                        if cmd == "shutdown":
+                            reply = json.dumps({"status": "ok", "message": "shutting down"})
+                            try:
+                                client.sendall(reply.encode() + b"\n")
+                            except OSError:
+                                pass
+                            self.stop()
+                            return
+                        if cmd == "ping":
+                            reply = json.dumps(
+                                {"status": "ok", "message": "pong"},
+                                separators=(",", ":"),
+                            )
+                            try:
+                                client.sendall(reply.encode() + b"\n")
+                            except OSError:
+                                pass
+
+                with self.lock:
+                    if self.telemetry_buffer:
+                        latest = self.telemetry_buffer[-1]
+                        payload = TelemetryNormalizer.to_json_bytes(latest) + b"\n"
+                        try:
+                            client.sendall(payload)
+                        except OSError:
+                            break
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            logger.debug("Client %s disconnected: %s", addr, e)
+        finally:
+            with self.lock:
+                try:
+                    self.clients.remove(client)
+                except ValueError:
+                    pass
+            try:
+                client.close()
+            except OSError:
+                pass
+
+    def _run_broadcaster(self) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            while self.running:
+                with self.lock:
+                    if self.telemetry_buffer:
+                        latest = self.telemetry_buffer[-1]
+                        data = TelemetryNormalizer.to_json_bytes(latest)
+                        try:
+                            sock.sendto(data, (self.host, self.broadcast_port))
+                        except OSError as e:
+                            logger.debug("Broadcast error: %s", e)
+
+                time.sleep(0.016)
+        except Exception as e:
+            logger.error("Broadcaster error: %s", e)
+        finally:
+            sock.close()

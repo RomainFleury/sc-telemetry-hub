@@ -69,3 +69,11 @@ class DBoxParser:
         except Exception as e:
             logger.error(f"Unexpected parse error: {e}")
             return None
+
+    @staticmethod
+    def parse_hex(hex_string: str) -> Optional[Dict[str, Any]]:
+        """Parse a packet from contiguous hex (spaces allowed)."""
+        cleaned = "".join(hex_string.split())
+        if len(cleaned) % 2:
+            return None
+        return DBoxParser.parse(bytes.fromhex(cleaned))

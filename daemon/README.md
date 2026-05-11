@@ -4,6 +4,8 @@ The core telemetry processing server.
 
 ## Setup
 
+Packaging uses **`pyproject.toml`** (same idea as [libthirdspacevest-simhub](https://github.com/RomainFleury/libthirdspacevest-simhub) `modern-third-space/pyproject.toml`): setuptools maps the import package `sc_telemetry` onto the `src/` directory.
+
 ```bash
 cd daemon
 pip install -e .

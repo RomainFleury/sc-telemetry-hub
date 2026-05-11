@@ -3,8 +3,9 @@
 ## What's Done ✅
 
 1. **Daemon Core** - All modules exist but parser is placeholder
-   - `daemon/src/cli.py` - Start/stop commands
-   - `daemon/src/server.py` - UDP/TCP server
+   - `daemon/setup.py` maps package **`sc_telemetry`** to the **`src/`** directory (`pip install -e .` from `daemon/`)
+   - `daemon/src/cli.py` - Start/stop, `discover`, `test-parser`, `ping`
+   - `daemon/src/server.py` - UDP/TCP server (newline-delimited JSON; `ping` / `shutdown` over TCP)
    - `daemon/src/parser.py` - Placeholder (needs real D-BOX format)
    - `daemon/src/normalizer.py` - JSON output
    - `daemon/src/impact_detector.py` - G-force spike detection
@@ -16,24 +17,12 @@
 
 ## What's Next (Priority Order) 🚀
 
-### 1. Set Up Electron/React UI (TODAY)
+### 1. Wire the Electron/React UI to the daemon (TODAY)
 
-```bash
-cd web
-npm create vite . -- --template react
-npm install
-npm install axios react-router-dom
-```
+The `web/` Vite + React + Electron scaffold is in place. Next work:
 
-**What to build:**
-- `src/App.tsx` - Main container
-- `src/socket.ts` - TCP client (connect to daemon port 5050)
-- `src/components/TelemetryDisplay.tsx` - Show current values
-- `src/components/GForceGraph.tsx` - Real-time chart
-- `src/components/ImpactLog.tsx` - Event log
-- `src/components/DaemonStatus.tsx` - Status indicator
-- `src/components/Console.tsx` - Daemon logs viewer
-- `electron/main.ts` - Electron main process
+- Replace the placeholder `fetch('http://localhost:5050/api/telemetry')` path in `web/src/context/TelemetryContext.tsx` with a real TCP or Electron IPC bridge to the daemon (newline-delimited JSON on port **5050**, same as `examples/python_client.py` TCP mode).
+- Optional: add `web/src/socket.ts` (or preload IPC) as a thin client over that stream.
 
 ### 2. Test Daemon + UI Communication (TODAY)
 
@@ -52,25 +41,35 @@ cd web && npm run dev
 
 ### 3. Discover Real D-BOX Packet Format (ASAP)
 
-**Create `daemon/src/discover.py`:**
-```python
-# Sniff UDP port 33740 and log hex packets
-# Compare structure with parser expectations
-# Document actual format
+Use the CLI (no separate script needed):
+
+```bash
+cd daemon && pip install -e .
+python -m sc_telemetry.cli discover --port 33740
+python -m sc_telemetry.cli test-parser "<paste hex from discover>"
 ```
 
-**Then update `daemon/src/parser.py` with correct binary format**
+Then update `daemon/src/parser.py` with the correct binary layout and document it under `docs/` when confirmed.
 
 ### 4. Windows Batch Scripts (THIS WEEK)
 
 ```batch
 windows/
-├── check-setup.bat      # Verify Python/Node installed
-├── install-deps.bat     # pip install -e daemon && cd web && yarn
-├── start-daemon.bat     # python3 -m sc_telemetry.cli daemon start
-├── start-ui.bat         # cd web && yarn dev
-├── start-all.bat        # Both in parallel
-└── SETUP.md             # Instructions
+├── check-setup.bat          # Orchestrator (like libthirdspacevest-simhub)
+├── install-deps.bat         # pip install -e daemon + yarn install web
+├── start-daemon.bat         # sc_telemetry.cli daemon start
+├── start-ui.bat             # yarn dev in web/
+├── start-all.bat            # Daemon (new window) + UI
+├── .env.bat.example         # Copy to .env.bat → set STH_PYTHON=...
+├── README.md
+├── SETUP.md
+└── setup/
+    ├── resolve-python.bat
+    ├── check-python.bat
+    ├── check-node.bat
+    ├── check-yarn.bat
+    ├── check-python-packages.bat
+    └── check-web-dependencies.bat
 ```
 
 ## Code Template for TCP Socket Client

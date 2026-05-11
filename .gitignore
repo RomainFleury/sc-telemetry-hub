@@ -13,6 +13,7 @@ web/src/.DS_Store
 
 # Python
 daemon/.venv
+*.egg-info/
 **/__pycache__/
 *.py[cod]
 *$py.class

@@ -61,18 +61,24 @@ def tcp_consumer(host="127.0.0.1", port=5050):
     """Connect via TCP to Telemetry Hub daemon."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host, port))
-    
+
     print(f"Connected to {host}:{port}...")
     print("Press Ctrl+C to disconnect\n")
-    
+
+    buf = b""
     try:
         while True:
-            data = sock.recv(1024)
+            data = sock.recv(4096)
             if not data:
                 break
-            
-            payload = json.loads(data.decode())
-            print(json.dumps(payload, indent=2))
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line.decode())
+                print(json.dumps(payload, indent=2))
     except KeyboardInterrupt:
         print("\n\nDisconnected.")
     finally:

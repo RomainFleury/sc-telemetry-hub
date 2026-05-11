@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sc-telemetry"
+version = "0.1.0"
+description = "Star Citizen D-BOX telemetry hub (daemon)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/RomainFleury/sc-telemetry-hub"
+
+[project.scripts]
+sc-telemetry = "sc_telemetry.cli:main"
+
+[tool.setuptools]
+package-dir = { "sc_telemetry" = "src" }
+packages = ["sc_telemetry"]

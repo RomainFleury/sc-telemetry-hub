@@ -38,15 +38,22 @@ The project follows a **Python daemon + Electron UI** pattern (similar to [libth
 ```
 sc-telemetry-hub/
 ├── daemon/                          # Python daemon (telemetry server)
-│   ├── src/
+│   ├── src/                         # Python package root (import as sc_telemetry)
 │   │   ├── __init__.py
 │   │   ├── cli.py                   # Command-line interface
 │   │   ├── server.py                # Main daemon server
 │   │   ├── parser.py                # D-BOX packet parser
 │   │   ├── normalizer.py            # Telemetry standardization
 │   │   └── impact_detector.py       # Impact/spike detection
-│   ├── setup.py
+│   ├── pyproject.toml               # setuptools / pip (see libthirdspacevest pattern)
 │   └── README.md
+├── windows/                         # Windows batch helpers (libthirdspacevest-style)
+│   ├── check-setup.bat
+│   ├── install-deps.bat
+│   ├── start-daemon.bat
+│   ├── start-ui.bat
+│   ├── start-all.bat
+│   └── setup/
 ├── web/                             # Electron + React UI
 │   ├── src/
 │   ├── electron/
@@ -87,11 +94,16 @@ cd web && yarn install && yarn dev
 
 ### Windows
 
+Batch layout matches **[libthirdspacevest-simhub](https://github.com/RomainFleury/libthirdspacevest-simhub)** (`windows/check-setup.bat`, `windows/setup/`, optional `windows/.env.bat` with `STH_PYTHON` — same role as that repo’s `TSV_PYTHON`).
+
 ```batch
-# 1. Install Node.js LTS and Python 3.10+
-# 2. Double-click windows/check-setup.bat (checks prerequisites)
-# 3. Double-click windows/start-all.bat
+# 1. Install Node.js LTS and Python 3.10+ (enable "Add to PATH" for Python)
+# 2. Run: corepack enable   (once, for Yarn)
+# 3. Double-click windows\check-setup.bat
+# 4. Double-click windows\start-all.bat   (or start-daemon.bat + start-ui.bat)
 ```
+
+Details: **`windows/SETUP.md`**.
 
 ## How It Works
 
